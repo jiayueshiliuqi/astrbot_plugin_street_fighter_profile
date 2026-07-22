@@ -14,7 +14,7 @@ from dataclasses import dataclass, field
 from typing import Optional, Union
 
 import requests
-
+import html
 
 CAPI_URL = "https://production-us-central1-capi.sf6.streetfighter.com"
 WEB_BASE = "https://www.streetfighter.com"
@@ -1122,21 +1122,150 @@ class SF6Client:
 
     # ---- Web API 方法 ----
 
-    def _get_build_id(self) -> str:
-        if self._build_id:
+    def _get_build_id(self, force: bool = False) -> str:
+        """
+        获取 Buckler 当前 Next.js buildId。
+
+        force=True 时忽略本地缓存，并通过时间戳绕过 CDN/浏览器缓存。
+        """
+        if self._build_id and not force:
             return self._build_id
-        r = self._http.get(WEB_BASE + "/6/buckler/zh-hans", timeout=15, proxies=PROXIES)
-        r.raise_for_status()
-        m = re.search(r'buildId["\']?\s*:\s*["\']([^"\']+)["\']', r.text)
-        if m:
-            self._build_id = m.group(1)
+
+        response = self._http.get(
+            WEB_BASE + "/6/buckler/zh-hans",
+            params={"_": str(time.time_ns())} if force else None,
+            headers={
+                "Accept": "text/html,application/xhtml+xml",
+                "Cache-Control": "no-cache",
+                "Pragma": "no-cache",
+            },
+            timeout=15,
+            proxies=PROXIES,
+        )
+        response.raise_for_status()
+
+        # 优先解析 Next.js 标准的 __NEXT_DATA__。
+        match = re.search(
+            r'<script[^>]*id=["\']__NEXT_DATA__["\'][^>]*>'
+            r'(.*?)</script>',
+            response.text,
+            flags=re.IGNORECASE | re.DOTALL,
+        )
+
+        if match:
+            try:
+                next_data = json.loads(
+                    html.unescape(match.group(1))
+                )
+                build_id = str(
+                    next_data.get("buildId", "")
+                ).strip()
+
+                if build_id:
+                    self._build_id = build_id
+                    return build_id
+            except (TypeError, ValueError, json.JSONDecodeError):
+                pass
+
+        # 兼容内联或压缩后的 buildId。
+        match = re.search(
+            r'["\']buildId["\']\s*:\s*["\']([^"\']+)["\']',
+            response.text,
+        )
+
+        if match:
+            self._build_id = match.group(1)
             return self._build_id
-        raise RuntimeError("无法获取 Next.js buildId")
+
+        # 兼容从 Next.js build manifest 路径提取。
+        match = re.search(
+            r'/_next/static/([^/"\']+)/_buildManifest\.js',
+            response.text,
+        )
+
+        if match:
+            self._build_id = match.group(1)
+            return self._build_id
+
+        raise RuntimeError(
+            "无法获取 Buckler 当前 Next.js buildId"
+        )
 
     def _web_get_json(self, path: str) -> dict:
-        r = self._http.get(WEB_BASE + path, headers={"Accept": "application/json"}, timeout=15, proxies=PROXIES)
-        r.raise_for_status()
-        return r.json()
+        """
+        请求 Buckler JSON。
+
+        如果 _next/data 请求返回 404，说明 buildId 可能已经过期；
+        重新获取 buildId 并自动重试一次。
+        """
+        headers = {
+            "Accept": "application/json",
+            "Cache-Control": "no-cache",
+            "Pragma": "no-cache",
+        }
+
+        response = self._http.get(
+            WEB_BASE + path,
+            headers=headers,
+            timeout=15,
+            proxies=PROXIES,
+        )
+
+        build_match = re.search(
+            r"/_next/data/([^/]+)/",
+            path,
+        )
+
+        if response.status_code == 404 and build_match:
+            old_build_id = build_match.group(1)
+
+            # 强制刷新，不能继续使用 self._build_id 中的旧值。
+            self._build_id = None
+            new_build_id = self._get_build_id(force=True)
+
+            if new_build_id != old_build_id:
+                old_part = f"/_next/data/{old_build_id}/"
+                new_part = f"/_next/data/{new_build_id}/"
+
+                retry_path = path.replace(
+                    old_part,
+                    new_part,
+                    1,
+                )
+
+                print(
+                    "[SF6] Next.js buildId 已更新："
+                    f"{old_build_id} -> {new_build_id}"
+                )
+
+                response = self._http.get(
+                    WEB_BASE + retry_path,
+                    headers=headers,
+                    timeout=15,
+                    proxies=PROXIES,
+                )
+
+        try:
+            response.raise_for_status()
+        except requests.HTTPError as exc:
+            raise RuntimeError(
+                f"Buckler 请求失败：HTTP "
+                f"{response.status_code} {response.url}"
+            ) from exc
+
+        try:
+            data = response.json()
+        except requests.exceptions.JSONDecodeError as exc:
+            raise RuntimeError(
+                f"Buckler 返回的不是 JSON：{response.url}"
+            ) from exc
+
+        if not isinstance(data, dict):
+            raise RuntimeError(
+                f"Buckler 返回了无效 JSON：{response.url}"
+            )
+
+        return data
 
     def get_my_info(self) -> dict:
         """获取当前登录用户信息"""
