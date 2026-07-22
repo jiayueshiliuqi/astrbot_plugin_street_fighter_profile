@@ -28,6 +28,7 @@ astrbot_plugin_street_fighter_profile/
 ├── sf6_client.py
 ├── metadata.yaml
 ├── cookie.txt
+└── README.md
 ```
 
 ## 安装依赖
@@ -104,10 +105,10 @@ Cookie
 
 复制 `Cookie` 后面的完整内容。
 
-内容通常类似：
+内容类似：
 
 ```text
-key1=value1; key2=value2; key3=value3
+CookieConsent={xxxx
 ```
 
 注意：
@@ -120,7 +121,7 @@ key1=value1; key2=value2; key3=value3
 
 ### 5. 创建 cookie.txt
 
-在 `main.py` 所在目录创建：
+在 `main.py` 所在目录：
 
 ```text
 cookie.txt
@@ -136,7 +137,6 @@ astrbot_plugin_street_fighter_profile/
 ├── sf6_client.py
 ├── cookie.txt
 ├── metadata.yaml
-├── requirements.txt
 └── README.md
 ```
 
