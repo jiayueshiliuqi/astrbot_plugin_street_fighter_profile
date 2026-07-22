@@ -1,0 +1,2 @@
+# astrbot_plugin_street_fighter_profile
+街霸玩家信息查询插件
